@@ -1,0 +1,8 @@
+pandas
+yfinance
+xlwings
+beautifulsoup4
+textblob
+requests
+openpyxl
+lxml
