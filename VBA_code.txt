@@ -1,0 +1,980 @@
+Option Explicit
+
+Public gSMA_ROI As Double, gRSI_ROI As Double, gBH_ROI As Double
+Public gSMA_Risk As Double, gRSI_Risk As Double, gBH_Risk As Double
+Public gSMA_Final As Double, gRSI_Final As Double, gBH_Final As Double
+Public gInitialCap As Double
+Public gVolatility As Double
+Public gSharpeRatio As Double
+Public gMarketMood As String
+
+
+Sub RunComparison()
+    Dim wsData As Worksheet
+    Dim arrData As Variant, arrResults() As Variant
+    Dim i As Long, LastRow As Long
+    
+    ' Ustawienia
+    Dim CommissionPct As Double, SpreadVal As Double
+    Dim SMA_Period As Integer, RSI_Period As Integer
+    Dim UserStartDate As Date, DataFirstDate As Date
+    
+    ' Portfele
+    Dim CapSMA As Double, SharesSMA As Double, EquitySMA As Double
+    Dim CapRSI As Double, SharesRSI As Double, EquityRSI As Double
+    Dim CapBH As Double, SharesBH As Double, EquityBH As Double
+    
+    ' Ryzyko
+    Dim PeakSMA As Double, PeakRSI As Double, PeakBH As Double
+    Dim DD_SMA As Double, DD_RSI As Double, DD_BH As Double
+    
+    Set wsData = ThisWorkbook.Sheets("DATA")
+    
+    ' A. USTAWIENIA
+    gInitialCap = wsData.Range("H2").Value
+    CommissionPct = wsData.Range("H3").Value
+    SpreadVal = wsData.Range("H4").Value
+    
+    DataFirstDate = wsData.Range("A2").Value
+    If IsDate(wsData.Range("H5").Value) Then UserStartDate = wsData.Range("H5").Value Else UserStartDate = DateAdd("yyyy", -1, Date)
+    
+    If UserStartDate < DataFirstDate Then
+        MsgBox "Warning: Data available only from " & DataFirstDate & ".", vbExclamation
+        UserStartDate = DataFirstDate
+        wsData.Range("H5").Value = UserStartDate
+    End If
+    
+    If wsData.Range("H6").Value > 0 Then SMA_Period = wsData.Range("H6").Value Else SMA_Period = 50
+    If wsData.Range("H7").Value > 0 Then RSI_Period = wsData.Range("H7").Value Else RSI_Period = 14
+    
+    ' Reset
+    CapSMA = gInitialCap: SharesSMA = 0: PeakSMA = gInitialCap: gSMA_Risk = 0
+    CapRSI = gInitialCap: SharesRSI = 0: PeakRSI = gInitialCap: gRSI_Risk = 0
+    CapBH = gInitialCap: SharesBH = 0: PeakBH = gInitialCap: gBH_Risk = 0
+    
+    '  DANE
+    LastRow = wsData.Cells(wsData.Rows.count, "A").End(xlUp).Row
+    If LastRow < 60 Then MsgBox "Not enough data!", vbCritical: Exit Sub
+    
+    arrData = wsData.Range("A1:F" & LastRow).Value
+    ReDim arrResults(1 To LastRow, 1 To 5)
+    
+    Dim startLoop As Long: startLoop = SMA_Period + 5
+    
+    '  SYMULACA
+    For i = 2 To LastRow
+        Dim Price As Double: Price = arrData(i, 4)
+        Dim DateVal As Date: DateVal = arrData(i, 1)
+        
+        If DateVal < UserStartDate Or i < startLoop Then
+            EquitySMA = gInitialCap: EquityRSI = gInitialCap: EquityBH = gInitialCap
+        Else
+            ' 1. SMA
+            Dim sumPrice As Double, k As Integer, avgSMA As Double
+            sumPrice = 0
+            For k = 0 To SMA_Period - 1: sumPrice = sumPrice + arrData(i - k, 4): Next k
+            avgSMA = sumPrice / SMA_Period
+            
+            If Price > avgSMA And CapSMA > 0.01 Then
+                SharesSMA = CapSMA / ((Price + (SpreadVal / 2)) * (1 + CommissionPct))
+                CapSMA = 0
+            ElseIf Price < avgSMA And SharesSMA > 0 Then
+                CapSMA = SharesSMA * (Price - (SpreadVal / 2)) * (1 - CommissionPct)
+                SharesSMA = 0
+            End If
+            
+            ' 2. RSI
+            Dim avgGain As Double, avgLoss As Double, RSI As Double, change As Double, x As Integer
+            avgGain = 0: avgLoss = 0
+            For x = 0 To RSI_Period - 1
+                change = arrData(i - x, 4) - arrData(i - x - 1, 4)
+                If change > 0 Then avgGain = avgGain + change Else avgLoss = avgLoss + Abs(change)
+            Next x
+            If avgLoss = 0 Then RSI = 100 Else RSI = 100 - (100 / (1 + (avgGain / avgLoss)))
+            
+            If RSI < 30 And CapRSI > 0.01 Then
+                SharesRSI = CapRSI / ((Price + (SpreadVal / 2)) * (1 + CommissionPct))
+                CapRSI = 0
+            ElseIf RSI > 70 And SharesRSI > 0 Then
+                CapRSI = SharesRSI * (Price - (SpreadVal / 2)) * (1 - CommissionPct)
+                SharesRSI = 0
+            End If
+            
+            ' 3. BUY & HOLD
+            If SharesBH = 0 And CapBH > 0 Then
+                SharesBH = CapBH / ((Price + (SpreadVal / 2)) * (1 + CommissionPct))
+                CapBH = 0
+            End If
+            
+            ' Equity
+            If SharesSMA > 0 Then EquitySMA = SharesSMA * (Price - (SpreadVal / 2)) Else EquitySMA = CapSMA
+            If SharesRSI > 0 Then EquityRSI = SharesRSI * (Price - (SpreadVal / 2)) Else EquityRSI = CapRSI
+            If SharesBH > 0 Then EquityBH = SharesBH * (Price - (SpreadVal / 2)) Else EquityBH = CapBH
+            
+            ' Ryzyko
+            If EquitySMA > PeakSMA Then
+                PeakSMA = EquitySMA
+            Else
+                DD_SMA = (PeakSMA - EquitySMA) / PeakSMA
+                If DD_SMA > gSMA_Risk Then gSMA_Risk = DD_SMA
+            End If
+            
+            If EquityRSI > PeakRSI Then
+                PeakRSI = EquityRSI
+            Else
+                DD_RSI = (PeakRSI - EquityRSI) / PeakRSI
+                If DD_RSI > gRSI_Risk Then gRSI_Risk = DD_RSI
+            End If
+            
+            If EquityBH > PeakBH Then
+                PeakBH = EquityBH
+            Else
+                DD_BH = (PeakBH - EquityBH) / PeakBH
+                If DD_BH > gBH_Risk Then gBH_Risk = DD_BH
+            End If
+        End If
+        
+        arrResults(i, 1) = DateVal
+        arrResults(i, 2) = Price
+        arrResults(i, 3) = EquitySMA
+        arrResults(i, 4) = EquityRSI
+        arrResults(i, 5) = EquityBH
+    Next i
+    
+    ' Wyniki Globalne
+    gSMA_Final = arrResults(LastRow, 3): gSMA_ROI = (gSMA_Final - gInitialCap) / gInitialCap
+    gRSI_Final = arrResults(LastRow, 4): gRSI_ROI = (gRSI_Final - gInitialCap) / gInitialCap
+    gBH_Final = arrResults(LastRow, 5): gBH_ROI = (gBH_Final - gInitialCap) / gInitialCap
+
+    Dim PriceRange As Range
+    Set PriceRange = wsData.Range("D2:D" & LastRow)
+    
+    ' 1.  zmienność
+    gVolatility = CalculateVolatility(PriceRange)
+    
+    ' 2.  Sharpe Ratio
+    gSharpeRatio = CalculateSharpe(gBH_ROI, gVolatility)
+
+    ' Zrzut do Excela
+    wsData.Range("J:N").Clear
+    wsData.Range("J1").Resize(LastRow, 5).Value = arrResults
+    wsData.Range("L:N").NumberFormat = "#,##0.00 ""PLN"""
+    
+    ' Wykres
+    Call CreateComparisonChart(wsData, LastRow)
+End Sub
+
+
+'  WYKRES
+
+Sub CreateComparisonChart(wsSource As Worksheet, LastRow As Long)
+    Dim wsDest As Worksheet: Set wsDest = ThisWorkbook.Sheets("COMPARISON")
+    Dim chtObj As ChartObject, shp As Shape
+    Dim myChart As Chart, ser As Series
+    Dim ticker As String: ticker = wsSource.Range("H1").Value
+    
+    ' 1. Czyścimy stare
+    For Each chtObj In wsDest.ChartObjects
+        chtObj.Delete
+    Next chtObj
+    
+    For Each shp In wsDest.Shapes
+        If shp.Type = msoTextBox Then shp.Delete
+    Next shp
+    
+    ' 2. Tworzymy Wykres
+    Set chtObj = wsDest.ChartObjects.Add(Left:=wsDest.Range("A12").Left, Top:=wsDest.Range("A12").Top, Width:=900, Height:=550)
+    Set myChart = chtObj.Chart
+    
+    With myChart
+        .ChartType = xlLine
+        .HasTitle = True
+        .ChartTitle.Text = "Strategy Battle: " & ticker
+        
+        ' Formatowanie Tytułu
+        With .ChartTitle.Format.TextFrame2.TextRange.Font
+            .Size = 24
+            .Bold = msoTrue
+        End With
+        
+        Do While .SeriesCollection.count > 0: .SeriesCollection(1).Delete: Loop
+        
+        ' --- KROK 1: DODAJEMY STRATEGIE ---
+        ' SMA
+        Set ser = .SeriesCollection.NewSeries
+        With ser
+            .Name = "SMA Trend"
+            .Values = wsSource.Range("L2:L" & LastRow)
+            .XValues = wsSource.Range("J2:J" & LastRow)
+            .AxisGroup = xlPrimary
+            .Format.line.ForeColor.RGB = RGB(0, 112, 192)
+            .Format.line.Weight = 3
+        End With
+        
+        ' RSI
+        Set ser = .SeriesCollection.NewSeries
+        With ser
+            .Name = "RSI Reversal"
+            .Values = wsSource.Range("M2:M" & LastRow)
+            .XValues = wsSource.Range("J2:J" & LastRow)
+            .AxisGroup = xlPrimary
+            .Format.line.ForeColor.RGB = RGB(0, 176, 80)
+            .Format.line.Weight = 3
+        End With
+        
+        ' Buy & Hold
+        Set ser = .SeriesCollection.NewSeries
+        With ser
+            .Name = "Buy & Hold"
+            .Values = wsSource.Range("N2:N" & LastRow)
+            .XValues = wsSource.Range("J2:J" & LastRow)
+            .AxisGroup = xlPrimary
+            .Format.line.ForeColor.RGB = RGB(80, 80, 80)
+            .Format.line.Weight = 4
+        End With
+        
+        ' --- KROK 2:
+        Set ser = .SeriesCollection.NewSeries
+        With ser
+            .Name = "Asset Price"
+            .Values = wsSource.Range("K2:K" & LastRow)
+            .XValues = wsSource.Range("J2:J" & LastRow)
+            .AxisGroup = xlSecondary
+            .Format.line.ForeColor.RGB = RGB(255, 140, 0)
+            .Format.line.DashStyle = msoLineSysDot
+            .Format.line.Weight = 2.5
+        End With
+        
+        ' --- KROK 3: FORMATOWANIE
+        .HasAxis(xlValue, xlPrimary) = True
+        .HasAxis(xlValue, xlSecondary) = True
+        
+        .Legend.Position = xlLegendPositionBottom
+        .Legend.Font.Size = 14
+        
+        With .Axes(xlCategory)
+            .TickLabels.NumberFormat = "yyyy"
+            .TickLabels.Font.Size = 12
+            .TickLabels.Font.Bold = True
+        End With
+        
+        .Axes(xlValue, xlPrimary).TickLabels.Font.Size = 12
+        .Axes(xlValue, xlSecondary).TickLabels.Font.Size = 12
+    End With
+    
+    ' 3. Wyrocznia
+    Dim boxLeft As Double: boxLeft = chtObj.Left + chtObj.Width + 10
+    Dim myBox As Shape: Set myBox = wsDest.Shapes.AddTextbox(msoTextOrientationHorizontal, boxLeft, chtObj.Top, 340, 550)
+    
+    With myBox
+        .TextFrame2.TextRange.Text = GetMarketAnalysis()
+        .Fill.ForeColor.RGB = RGB(30, 30, 30)
+        .TextFrame2.TextRange.Font.Fill.ForeColor.RGB = RGB(255, 255, 255)
+        .TextFrame2.TextRange.Font.Name = "Consolas"
+        .TextFrame2.TextRange.Font.Size = 11
+        .line.ForeColor.RGB = RGB(0, 176, 80)
+        .line.Weight = 2
+    End With
+End Sub
+
+
+' 3. GENERATOR RAPORTU
+
+Sub GenerateProfessionalReport()
+    Dim wsRep As Worksheet, wsData As Worksheet, wsComp As Worksheet
+    Dim shp As Shape
+    
+    Set wsRep = ThisWorkbook.Sheets("REPORT")
+    Set wsData = ThisWorkbook.Sheets("DATA")
+    Set wsComp = ThisWorkbook.Sheets("COMPARISON")
+    
+   
+    Application.ScreenUpdating = False
+    
+    
+    wsRep.Cells.Clear
+    
+    wsRep.Cells.Font.Name = "Calibri"
+    wsRep.Cells.Font.Size = 15
+    
+    ' Usuwanie starych obrazków
+    For Each shp In wsRep.Shapes
+        If shp.Type <> msoFormControl Then shp.Delete
+    Next shp
+    
+    
+    ' SECTION 1: HEADER & SUMMARY
+    
+    With wsRep.Range("A1:H3")
+        .Merge: .Value = "INVESTMENT STRATEGY REPORT: " & UCase(wsData.Range("H1").Value)
+        .Font.Size = 26 ']
+        .Font.Bold = True: .HorizontalAlignment = xlCenter: .VerticalAlignment = xlCenter
+        .Interior.Color = RGB(32, 55, 100): .Font.Color = RGB(255, 255, 255)
+    End With
+    
+    With wsRep.Range("A4:H4")
+        .Merge: .Value = "Prepared by: Gabriela Kozioł"
+        .Font.Size = 14
+        .Font.Italic = True: .HorizontalAlignment = xlCenter
+        .Interior.Color = RGB(240, 240, 240): .Borders(xlEdgeBottom).LineStyle = xlContinuous
+    End With
+    
+    ' Dane wierszowe
+    wsRep.Range("A6").Value = "Simulation Start Date:": wsRep.Range("B6").Value = wsData.Range("H5").Value
+    wsRep.Range("A7").Value = "Initial Capital:": wsRep.Range("B7").Value = Format(wsData.Range("H2").Value, "#,##0.00 PLN")
+    wsRep.Range("A8").Value = "Generated On:": wsRep.Range("B8").Value = Format(Now, "yyyy-mm-dd HH:mm")
+    
+    wsRep.Range("A6:A8").Font.Bold = True
+    wsRep.Range("A6:A8").Font.Color = RGB(100, 100, 100)
+    
+    ' Executive Summary Header
+    With wsRep.Range("A10")
+        .Value = "1. EXECUTIVE SUMMARY & METHODOLOGY"
+        .Font.Bold = True: .Font.Size = 18 ' <--- ZMIANA
+        .Font.Color = RGB(32, 55, 100)
+    End With
+    
+    Dim SummaryText As String
+    SummaryText = "This algorithmic trading simulation engine evaluates the historical performance of three distinct investment strategies. " & _
+                  "The system processes historical market data to calculate risk-adjusted returns, maximum drawdown, and capital appreciation." & vbCrLf & _
+                  "• SMA Trend Following: Enters positions when price exceeds the moving average." & vbCrLf & _
+                  "• RSI Mean Reversion: Capitalizes on overbought/oversold conditions." & vbCrLf & _
+                  "• Buy & Hold: Benchmark strategy representing baseline market performance."
+    
+    With wsRep.Range("A11:H17")
+        .Merge: .Value = SummaryText: .HorizontalAlignment = xlLeft: .VerticalAlignment = xlTop: .WrapText = True
+        .Font.Size = 14 ' <--- ZMIANA
+        .Interior.Color = RGB(250, 250, 250): .Borders.LineStyle = xlContinuous: .Borders.Color = RGB(200, 200, 200)
+    End With
+
+    
+    ' SECTION 2: PERFORMANCE METRICS TABLE
+   
+    With wsRep.Range("A19")
+        .Value = "2. PERFORMANCE METRICS"
+        .Font.Bold = True: .Font.Size = 18 '
+        .Font.Color = RGB(32, 55, 100)
+    End With
+    
+    wsRep.Range("A20:D20").Value = Array("Strategy Name", "Final Equity (PLN)", "Total Return (ROI)", "Max Risk (Drawdown)")
+    With wsRep.Range("A20:D20")
+        .Font.Bold = True: .Interior.Color = RGB(220, 220, 220): .Borders.LineStyle = xlContinuous: .HorizontalAlignment = xlCenter
+        .Font.Size = 14 '
+    End With
+    
+    wsRep.Range("A21:D21").Value = Array("SMA Trend Following", gSMA_Final, gSMA_ROI, gSMA_Risk)
+    wsRep.Range("A22:D22").Value = Array("RSI Mean Reversion", gRSI_Final, gRSI_ROI, gRSI_Risk)
+    wsRep.Range("A23:D23").Value = Array("Buy & Hold (Benchmark)", gBH_Final, gBH_ROI, gBH_Risk)
+    
+    wsRep.Range("B21:B23").NumberFormat = "#,##0.00"
+    wsRep.Range("C21:D23").NumberFormat = "0.00%"
+    wsRep.Range("A21:D23").Borders.LineStyle = xlContinuous
+    wsRep.Range("B21:D23").HorizontalAlignment = xlCenter
+    wsRep.Range("A21:D23").Font.Size = 15
+    
+   
+    Dim rng As Range
+    For Each rng In wsRep.Range("C21:C23")
+        If rng.Value > 0 Then
+            rng.Font.Color = RGB(0, 150, 0)
+            rng.Font.Bold = True
+        ElseIf rng.Value < 0 Then
+            rng.Font.Color = RGB(200, 0, 0)
+            rng.Font.Bold = True
+        End If
+    Next rng
+
+    ' --------------
+    ' URUCHAMIAMY ANALIZĘ SENTYMENTU
+
+    Call RunRealSentimentAnalysis
+    
+    ' Opis
+    With wsRep.Range("E24")
+        .Value = "AI MARKET SENTIMENT:"
+        .Font.Bold = True
+        .HorizontalAlignment = xlRight
+        .Font.Size = 14
+    End With
+
+    ' ---------------------------------------------------------
+    ' SECTION 3: VISUAL ANALYSIS (CHART)
+   
+    With wsRep.Range("A26")
+        .Value = "3. STRATEGY PERFORMANCE CHART"
+        .Font.Bold = True: .Font.Size = 18: .Font.Color = RGB(32, 55, 100)
+    End With
+    
+    If wsComp.ChartObjects.count > 0 Then
+        wsComp.ChartObjects(1).CopyPicture Appearance:=xlScreen, Format:=xlPicture
+        wsRep.Range("A27").PasteSpecial
+        
+        Dim myPic As Shape
+        Set myPic = wsRep.Shapes(wsRep.Shapes.count)
+        
+        myPic.LockAspectRatio = msoFalse
+        
+        myPic.Width = 900
+        myPic.Height = 550
+        myPic.Top = wsRep.Range("A27").Top
+        myPic.Left = wsRep.Range("A27").Left
+    Else
+        wsRep.Range("A27").Value = "[No Chart Available]"
+    End If
+    
+    ' ------
+    ' SECTION 4: ORACLE
+    
+    Dim OracleRow As Long: OracleRow = 52
+    
+    With wsRep.Range("A" & OracleRow)
+        .Value = "4. ORACLE RECOMMENDATION & VERDICT"
+        .Font.Bold = True: .Font.Size = 18: .Font.Color = RGB(32, 55, 100)
+    End With
+    
+    ' A) TECHNICAL
+    Dim TechnicalText As String
+    TechnicalText = GetMarketAnalysis()
+    
+    wsRep.Range("A" & OracleRow + 1).Value = "A) TECHNICAL ANALYSIS (MATH & STRATEGY)"
+    wsRep.Range("A" & OracleRow + 1).Font.Bold = True
+    wsRep.Range("A" & OracleRow + 1).Font.Size = 14
+    
+    With wsRep.Range("A" & OracleRow + 2 & ":H" & OracleRow + 18)
+        .Merge: .Value = TechnicalText: .HorizontalAlignment = xlLeft: .VerticalAlignment = xlTop: .WrapText = True
+        .Font.Size = 13
+        .Font.Name = "Consolas"
+        .Interior.Color = RGB(245, 245, 255)
+        .Borders.LineStyle = xlContinuous
+    End With
+    
+    ' B) AI SENTIMENT
+    Dim AIRow As Long: AIRow = OracleRow + 20
+    Dim AiText As String
+    AiText = GetMarketMood()
+    
+    wsRep.Range("A" & AIRow).Value = "B) AI MARKET SENTIMENT (NEWS & MEDIA)"
+    wsRep.Range("A" & AIRow).Font.Bold = True
+    wsRep.Range("A" & AIRow).Font.Size = 14
+    
+    With wsRep.Range("A" & AIRow + 1 & ":H" & AIRow + 8)
+        .Merge: .Value = AiText: .HorizontalAlignment = xlLeft: .VerticalAlignment = xlTop: .WrapText = True
+        .Font.Size = 13
+        .Font.Name = "Consolas"
+        .Interior.Color = RGB(245, 255, 245)
+        .Borders.LineStyle = xlContinuous
+    End With
+    
+    ' -------------------------------------
+    ' SECTION 5: GLOSSARY
+
+    Call AddGlossaryToReport(wsRep, AIRow + 10)
+    
+    wsRep.Columns("A:H").EntireColumn.AutoFit
+    
+    wsRep.Activate
+    wsRep.Range("A1").Select
+    Application.ScreenUpdating = True
+    
+    ' --- PDF GENERATION ---
+    On Error Resume Next
+    Dim pdfPath As String, fileName As String
+    fileName = "Raport_" & wsData.Range("H1").Value & "_" & Format(Now, "yyyy-mm-dd_hh-mm") & ".pdf"
+    pdfPath = ThisWorkbook.Path & "\" & fileName
+    
+    wsRep.ExportAsFixedFormat Type:=xlTypePDF, fileName:=pdfPath, Quality:=xlQualityStandard, _
+        IncludeDocProperties:=True, IgnorePrintAreas:=False, OpenAfterPublish:=True
+        
+    If Err.Number = 0 Then
+        MsgBox "Raport (Wersja HD) gotowy!", vbInformation
+    Else
+        MsgBox "Błąd PDF: " & Err.Description, vbExclamation
+    End If
+    On Error GoTo 0
+End Sub
+
+'
+' 4. SENTYMENT RYNKU
+
+Sub RunRealSentimentAnalysis()
+    Dim pythonScript As String, pythonExe As String, ticker As String, wsh As Object
+    Dim moodFile As String, folderPath As String, wsRep As Worksheet, cmd As String
+    
+    Set wsRep = ThisWorkbook.Sheets("REPORT")
+    folderPath = ThisWorkbook.Path
+    ThisWorkbook.Save
+    
+    ticker = ThisWorkbook.Sheets("DATA").Range("H1").Value
+    If ticker = "" Then ticker = "NVDA"
+    
+    moodFile = folderPath & "\market_mood.txt"
+    pythonScript = folderPath & "\sentiment.py"
+    
+    ' --- ŚCIEŻKA DO ANACONDY ---Tuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu!!!!!!
+    pythonExe = "C:\Users\HP\anaconda3\python.exe" 'here change your path
+
+    ' ----------------------------------------------------
+    
+    
+    
+    On Error Resume Next
+    If Dir(moodFile) <> "" Then Kill moodFile: DoEvents
+    On Error GoTo 0
+    
+    ' Uruchomienie Pythona
+    Set wsh = CreateObject("WScript.Shell")
+    cmd = "cmd /c """"" & pythonExe & """ """ & pythonScript & """ " & ticker & """"
+    wsh.Run cmd, 6, True
+    
+    ' Czekanie
+    Dim counter As Integer: counter = 0
+    Do While Dir(moodFile) = ""
+        Application.Wait (Now + TimeValue("0:00:01"))
+        DoEvents
+        counter = counter + 1
+        If counter > 20 Then Exit Sub
+    Loop
+    Application.Wait (Now + TimeValue("0:00:01"))
+
+    ' Odczyt
+    Dim mood As String, scoreStr As String, headline As String, fileNum As Integer
+    mood = "Error": scoreStr = "0": headline = "Brak danych"
+    
+    If Dir(moodFile) <> "" Then
+        fileNum = FreeFile
+        Open moodFile For Input As #fileNum
+            If Not EOF(fileNum) Then Line Input #fileNum, mood
+            If Not EOF(fileNum) Then Line Input #fileNum, scoreStr
+            If Not EOF(fileNum) Then Line Input #fileNum, headline
+        Close #fileNum
+    End If
+    
+    ' Zapis do zmiennej globalnej
+    gMarketMood = "Sentiment: " & mood & vbCrLf & "Score: " & scoreStr & vbCrLf & "News: " & headline
+
+    ' Wizualizacja w tabelce raportu
+    Dim scoreVal As Double
+    scoreStr = Replace(scoreStr, ".", ",")
+    If IsNumeric(scoreStr) Then scoreVal = CDbl(scoreStr) Else scoreVal = 0
+    
+    With wsRep.Range("G24")
+        .Value = mood & " (" & scoreVal & ")"
+        .Font.Bold = True
+        .Font.Size = 14
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+        
+        If scoreVal >= 0.1 Then
+            .Interior.Color = RGB(198, 239, 206): .Font.Color = RGB(0, 97, 0)
+        ElseIf scoreVal <= -0.1 Then
+            .Interior.Color = RGB(255, 199, 206): .Font.Color = RGB(156, 0, 6)
+        Else
+            .Interior.Color = RGB(240, 240, 240): .Font.Color = vbBlack
+        End If
+    End With
+    
+    ' Nagłówek newsa pod kafelkiem
+    With wsRep.Range("G25")
+        .Value = headline
+        .WrapText = True
+        .Font.Size = 11
+    End With
+End Sub
+
+' --- FUNKCJE POMOCNICZE ORACLE'A  ---
+Function GetMarketAnalysis() As String
+    Dim ws As Worksheet: Set ws = ThisWorkbook.Sheets("DATA")
+    Dim LastRow As Long: LastRow = ws.Cells(ws.Rows.count, "J").End(xlUp).Row
+    Dim ticker As String: ticker = ws.Range("H1").Value
+    
+    Dim LastPrice As Double: LastPrice = ws.Cells(LastRow, 11).Value
+    Dim StartDate As String: StartDate = ws.Range("H5").Value
+    
+    Dim StartPrice As Double, i As Long, dateFound As Boolean
+    For i = 2 To LastRow
+        If IsDate(ws.Cells(i, 1).Value) And IsDate(StartDate) Then
+            If ws.Cells(i, 1).Value >= CDate(StartDate) Then
+                StartPrice = ws.Cells(i, 4).Value
+                dateFound = True
+                Exit For
+            End If
+        End If
+    Next i
+    If dateFound = False Then StartPrice = 0
+    
+    Dim msg As String, priceChangeStr As String
+    If StartPrice <> 0 Then priceChangeStr = Format((LastPrice - StartPrice) / StartPrice, "+0.0%") Else priceChangeStr = "N/A"
+    
+    msg = "--- ORACLE INSIGHTS ---" & vbCrLf & _
+          "Ticker: " & ticker & " | Current Price: " & Format(LastPrice, "0.00") & vbCrLf & _
+          "Start Date:  " & StartDate & vbCrLf & _
+          "Start Price: " & Format(StartPrice, "0.00") & " (Change: " & priceChangeStr & ")" & vbCrLf & _
+          "-----------------------" & vbCrLf & vbCrLf
+          
+    msg = msg & "1. HISTORICAL PERFORMANCE:" & vbCrLf & "(Based on " & Format(gInitialCap, "#,##0") & " PLN capital)" & vbCrLf
+    msg = msg & "SMA Trend: " & Format(gSMA_Final, "#,##0") & " (" & Format(gSMA_ROI, "+0.0%") & ")" & vbCrLf
+    msg = msg & "RSI Swing: " & Format(gRSI_Final, "#,##0") & " (" & Format(gRSI_ROI, "+0.0%") & ")" & vbCrLf
+    msg = msg & "Buy&Hold:  " & Format(gBH_Final, "#,##0") & " (" & Format(gBH_ROI, "+0.0%") & ")" & vbCrLf & vbCrLf
+    
+    msg = msg & "2. RISK METRICS:" & vbCrLf
+    msg = msg & "Max Drawdown (B&H): " & GetRiskText(gBH_Risk) & vbCrLf
+    
+    If gVolatility > 0 Then
+        msg = msg & "Volatility (Annual): " & Format(gVolatility, "0.0%") & " "
+        
+        If gVolatility < 0.2 Then
+            msg = msg & "[SAFE/STABLE]"
+        ElseIf gVolatility < 0.4 Then
+            msg = msg & "[MODERATE]"
+        Else
+            msg = msg & "[HIGH RISK]"
+        End If
+        msg = msg & vbCrLf
+        
+        msg = msg & "Sharpe Ratio: " & Format(gSharpeRatio, "0.00") & " "
+       
+        If gSharpeRatio > 1 Then
+            msg = msg & "[EXCELLENT]"
+        ElseIf gSharpeRatio > 0.5 Then
+            msg = msg & "[GOOD]"
+        Else
+            msg = msg & "[POOR]"
+        End If
+        msg = msg & vbCrLf
+    End If
+    msg = msg & vbCrLf
+    
+    msg = msg & "3. FINAL VERDICT (" & Format(Date, "dd.mm") & "):" & vbCrLf & vbCrLf
+    msg = msg & "[ TREND ANALYSIS ]" & vbCrLf
+    If gSMA_Final >= gBH_Final Then
+        msg = msg & "SIGNAL:  UP (BULLISH)" & vbCrLf & "REASON:  Trading with the trend earned MORE money than just holding. The price is rising steadily." & vbCrLf & "ADVICE:  It pays to follow the trend. Good time to buy." & vbCrLf
+    Else
+        msg = msg & "SIGNAL:  UNCERTAIN / DOWN" & vbCrLf & "REASON:  Trying to trade the trend earned LESS than just holding. The price is moving up and down without clear direction." & vbCrLf & "ADVICE:  Don't trade actively. Just hold or wait." & vbCrLf
+    End If
+    msg = msg & vbCrLf
+    
+    msg = msg & "[ VALUE ANALYSIS ]" & vbCrLf
+    If gRSI_Final > gBH_Final And gRSI_ROI > 0 Then
+        msg = msg & "SIGNAL:  OPPORTUNITY (CHEAP)" & vbCrLf & "REASON:  Buying when the price drops works very well here. The stock bounces back quickly after falls." & vbCrLf
+    Else
+        msg = msg & "SIGNAL:  NEUTRAL" & vbCrLf & "REASON:  Buying the price drops is NOT making extra money right now. No special discount found." & vbCrLf
+    End If
+    
+    GetMarketAnalysis = msg
+End Function
+
+Function GetRiskText(RiskVal As Double) As String
+    Dim Level As String
+    
+    If RiskVal < 0.15 Then
+        Level = "LOW"
+    ElseIf RiskVal < 0.3 Then
+        Level = "MEDIUM"
+    Else
+        Level = "HIGH"
+    End If
+    GetRiskText = Format(RiskVal, "0.0%") & " [" & Level & "]"
+End Function
+
+Function GetMarketMood() As String
+    GetMarketMood = gMarketMood
+End Function
+
+' --- FUNKCJE MATEMATYCZNE ---
+Function CalculateVolatility(DataRange As Range) As Double
+    Dim arr() As Variant, returns() As Double
+    Dim i As Long, count As Long, mean As Double, sumSq As Double, sumRet As Double
+    
+    arr = DataRange.Value
+    count = UBound(arr, 1) - 1
+    ReDim returns(1 To count)
+    
+    For i = 1 To count
+        If arr(i, 1) > 0 Then returns(i) = (arr(i + 1, 1) - arr(i, 1)) / arr(i, 1) Else returns(i) = 0
+    Next i
+    
+    For i = 1 To count: sumRet = sumRet + returns(i): Next i
+    mean = sumRet / count
+    
+    For i = 1 To count: sumSq = sumSq + (returns(i) - mean) ^ 2: Next i
+    If count > 1 Then CalculateVolatility = Sqr(sumSq / (count - 1)) * Sqr(252) Else CalculateVolatility = 0
+End Function
+
+Function CalculateSharpe(AnnualReturn As Double, AnnualVolatility As Double) As Double
+    Dim RiskFreeRate As Double: RiskFreeRate = 0.03
+    If AnnualVolatility = 0 Then CalculateSharpe = 0 Else CalculateSharpe = (AnnualReturn - RiskFreeRate) / AnnualVolatility
+End Function
+
+' 5. ROZBUDOWANY SŁOWNIK
+
+Sub AddGlossaryToReport(ws As Worksheet, StartRow As Long)
+    Dim r As Long: r = StartRow + 2
+    
+    ' --- MAIN HEADER ---
+    With ws.Range("A" & r)
+        .Value = "EDUCATIONAL GLOSSARY & GUIDE"
+        .Font.Bold = True: .Font.Size = 18
+        .Interior.Color = RGB(32, 55, 100): .Font.Color = RGB(255, 255, 255)
+        .HorizontalAlignment = xlCenter
+    End With
+    ws.Range("A" & r & ":H" & r).Merge
+    r = r + 2
+    
+    ' SECTION 1
+    Call AddSectionHeader(ws, r, "1. UNDERSTANDING THE STRATEGIES (HOW WE TRADE)")
+    
+    Call AddDef(ws, r, "SMA Trend Following", _
+        "What is it? A strategy that follows the direction of the market." & vbCrLf & _
+        "How it works: It calculates the average price over the last 50 days. If the current price is HIGHER than the average, it assumes the trend is UP and buys. If lower, it sells." & vbCrLf & _
+        "Philosophy: 'The trend is your friend.' It aims to catch big market moves but may react slowly to sudden changes.")
+        
+    Call AddDef(ws, r, "RSI Mean Reversion", _
+        "What is it? A strategy that bets on price corrections (bouncing back)." & vbCrLf & _
+        "How it works: It uses the Relative Strength Index (RSI). If RSI < 30, the asset is considered 'Oversold' (too cheap, price dropped too fast) -> We BUY. If RSI > 70, it is 'Overbought' -> We SELL." & vbCrLf & _
+        "Philosophy: 'Buy low, sell high.' It tries to profit from market overreactions.")
+        
+    Call AddDef(ws, r, "Buy & Hold (Benchmark)", _
+        "What is it? The passive approach." & vbCrLf & _
+        "How it works: We buy the asset on the very first day of the simulation and never sell it, regardless of crashes or news." & vbCrLf & _
+        "Why compare?: This is our baseline. If our active strategies (SMA/RSI) cannot beat Buy & Hold, it means we are better off doing nothing.")
+
+    ' SECTION 2
+    Call AddSectionHeader(ws, r, "2. MEASURING SUCCESS & RISK (THE NUMBERS)")
+    
+    Call AddDef(ws, r, "Equity (Final Balance)", "The total value of your portfolio at the end of the simulation. It includes both the Cash you hold and the market value of any Shares you own.")
+    Call AddDef(ws, r, "ROI (Return on Investment)", "The total percentage profit or loss." & vbCrLf & "Formula: (Final Money - Initial Money) / Initial Money." & vbCrLf & "Example: If you start with 10,000 and end with 15,000, your ROI is +50%.")
+    Call AddDef(ws, r, "Max Drawdown (MDD)", "CRITICAL RISK METRIC. It measures the 'Pain Factor'." & vbCrLf & "Definition: The largest percentage drop from a historical peak to a subsequent trough." & vbCrLf & "Example: If your account goes up to $20,000 and then crashes to $10,000, your Drawdown is -50%." & vbCrLf & "Why it matters: High ROI with High Drawdown is dangerous. It tests if you would panic and sell during a crash.")
+    Call AddDef(ws, r, "Volatility (Risk)", "Measures how wildly the price swings. Low volatility (<20%) means a stable, boring stock. High volatility (>40%) means a rollercoaster ride.")
+    Call AddDef(ws, r, "Sharpe Ratio", "The 'Efficiency Score'. It calculates profit per unit of risk." & vbCrLf & "Formula: (Return - RiskFreeRate) / Volatility." & vbCrLf & "Above 1.0 is great (high profit, low stress). Below 0.5 is poor (not worth the risk).")
+
+    ' SECTION 3
+    Call AddSectionHeader(ws, r, "3. MARKET TERMINOLOGY USED IN REPORT")
+    
+    Call AddDef(ws, r, "Bullish / Bull Market", "A market condition where prices are rising or are expected to rise. (Symbol: UP because a bull attacks by thrusting horns upward).")
+    Call AddDef(ws, r, "Bearish / Bear Market", "A market condition where prices are falling. (Symbol: DOWN because a bear attacks by swiping paws downward).")
+    Call AddDef(ws, r, "Spread & Commission", "The hidden costs of trading included in this simulation." & vbCrLf & "Commission: The fee paid to the broker for every trade." & vbCrLf & "Spread: The difference between the buying and selling price. These costs make the simulation realistic.")
+
+    ws.Columns("A").ColumnWidth = 25
+    ws.Columns("B").ColumnWidth = 12
+End Sub
+
+Sub AddSectionHeader(ws As Worksheet, ByRef r As Long, Title As String)
+    r = r + 1
+    With ws.Range("A" & r)
+        .Value = Title
+        .Font.Bold = True
+        .Font.Size = 16 '
+        .Interior.Color = RGB(220, 220, 220)
+    End With
+    ws.Range("A" & r & ":H" & r).Merge
+    r = r + 1
+End Sub
+
+Sub AddDef(ws As Worksheet, ByRef r As Long, Term As String, Def As String)
+    ' 1. Termin
+    With ws.Range("A" & r)
+        .Value = Term
+        .Font.Bold = True
+        .Font.Size = 14 '
+        .VerticalAlignment = xlTop
+        .Interior.Color = RGB(245, 245, 245)
+        .Borders(xlEdgeBottom).LineStyle = xlContinuous
+        .Borders(xlEdgeBottom).Color = RGB(200, 200, 200)
+    End With
+    
+    ' 2. Definicja
+    Dim defRange As Range
+    Set defRange = ws.Range("B" & r & ":H" & r)
+    With defRange
+        .Merge
+        .Value = Def
+        .WrapText = True
+        .VerticalAlignment = xlTop
+        .Font.Size = 14 '
+        .Borders(xlEdgeBottom).LineStyle = xlContinuous
+        .Borders(xlEdgeBottom).Color = RGB(200, 200, 200)
+    End With
+    
+  
+    Dim totalWidth As Double, col As Range
+    For Each col In defRange.Columns: totalWidth = totalWidth + col.ColumnWidth: Next col
+    
+    Dim measureCell As Range: Set measureCell = ws.Range("Z" & r)
+    With measureCell
+        .Value = Def
+        .ColumnWidth = totalWidth
+        .Font.Name = "Calibri"
+        .Font.Size = 14
+        .WrapText = True
+        .EntireRow.AutoFit
+    End With
+    
+    Dim calculatedHeight As Double: calculatedHeight = ws.Rows(r).RowHeight
+    measureCell.ClearContents: measureCell.ColumnWidth = 8.43
+    
+    ws.Rows(r).RowHeight = calculatedHeight + 10
+    r = r + 1
+End Sub
+
+Sub ShowControlPanel()
+    frmSterowanie.Show vbModeless
+End Sub
+
+
+' WATCHLIST
+
+Sub UpdateWatchlist()
+    Dim wsWatch As Worksheet, wsData As Worksheet
+    Dim lastRowWatch As Long, i As Long, lastDataRow As Long
+    Dim ticker As String, MainTicker As String
+    Dim SMA_Period As Integer, RSI_Period As Integer
+    Dim pythonExe As String, scriptData As String, scriptSent As String
+    Dim folderPath As String, tempCSV As String
+    Dim wsh As Object, cmd As String
+    Dim fso As Object
+    
+    Set wsWatch = ThisWorkbook.Sheets("WATCHLIST")
+    Set wsData = ThisWorkbook.Sheets("DATA")
+    Set fso = CreateObject("Scripting.FileSystemObject")
+    Set wsh = CreateObject("WScript.Shell")
+    
+    MainTicker = wsData.Range("H1").Value
+    Application.ScreenUpdating = False
+    
+    ' --- 1. KONFIGURACJA ŚCIEŻEK (SPRAWDŹ TO DOKŁADNIE!) ---
+    folderPath = ThisWorkbook.Path
+    pythonExe = "C:\Users\HP\anaconda3\python.exe"
+    
+    scriptData = folderPath & "\pobierz_dane.py"
+    scriptSent = folderPath & "\sentiment.py"
+    tempCSV = folderPath & "\temp_data_dump.csv" ' Plik tymczasowy
+    
+    SMA_Period = 50
+    RSI_Period = 14
+    
+    ' Budowa nagłówków
+    With wsWatch
+        .Range("A1:H1").Value = Array("TICKER", "CENA", "TREND (SMA)", "RSI", "ODLEGŁOŚĆ %", "PROMOCJA %", "AI SENTYMENT", "RYZYKO")
+        .Range("A1:H1").Font.Bold = True
+        .Range("A1:H1").Interior.Color = RGB(40, 40, 40)
+        .Range("A1:H1").Font.Color = vbWhite
+    End With
+
+    lastRowWatch = wsWatch.Cells(wsWatch.Rows.count, "A").End(xlUp).Row
+    If lastRowWatch < 2 Then
+        MsgBox "Wpisz tickery w kolumnie A!", vbExclamation
+        GoTo CleanExit
+    End If
+    
+    ' --- GŁÓWNA PĘTLA ---
+    For i = 2 To lastRowWatch
+        ticker = UCase(Trim(wsWatch.Cells(i, 1).Value))
+        
+        If ticker <> "" Then
+            Application.StatusBar = "Pobieranie danych dla: " & ticker & " [" & i - 1 & "/" & lastRowWatch - 1 & "]"
+            
+            wsData.Range("H1").Value = ticker
+            wsData.Range("A2:F100000").ClearContents ' Czyścimy stare dane
+            
+            ' --- KROK KLUCZOWY: WYMUSZENIE ZAPISU DO PLIKU ---
+            ' Usuwamy stary plik tymczasowy, jeśli istnieje
+            On Error Resume Next
+            If Dir(tempCSV) <> "" Then Kill tempCSV
+            On Error GoTo 0
+            
+            ' Komenda: python script.py > temp.csv
+            ' Znak ">" przekierowuje wynik z ekranu do pliku!
+            cmd = "cmd /c """"" & pythonExe & """ """ & scriptData & """ > """ & tempCSV & """"""
+            wsh.Run cmd, 0, True
+            
+            ' --- IMPORT DANYCH DO EXCELA ---
+            If Dir(tempCSV) <> "" Then
+                If FileLen(tempCSV) > 0 Then
+                    Dim wbTemp As Workbook
+                    On Error Resume Next
+                    Set wbTemp = Workbooks.Open(tempCSV)
+                    If Err.Number = 0 Then
+                        ' Kopiujemy dane z pliku tymczasowego do DATA
+                        wbTemp.Sheets(1).UsedRange.Copy Destination:=wsData.Range("A2")
+                        wbTemp.Close SaveChanges:=False
+                    End If
+                    On Error GoTo 0
+                End If
+            End If
+            
+            ' --- Analiza Sentymentu (bez zmian) ---
+            Dim moodFile As String: moodFile = folderPath & "\market_mood.txt"
+            On Error Resume Next: If Dir(moodFile) <> "" Then Kill moodFile: On Error GoTo 0
+            cmd = "cmd /c """"" & pythonExe & """ """ & scriptSent & """ " & ticker & """"
+            wsh.Run cmd, 0, True
+            
+            ' --- PRZELICZANIE WSKAŹNIKÓW ---
+            lastDataRow = wsData.Cells(wsData.Rows.count, "A").End(xlUp).Row
+            
+            ' Sprawdzamy czy dane się pobrały (czy wierszy jest więcej niż 50)
+            If lastDataRow > 60 Then
+                Dim arrPrices As Variant
+                arrPrices = wsData.Range("D1:D" & lastDataRow).Value
+                Dim LastPrice As Double: LastPrice = arrPrices(lastDataRow, 1)
+                
+                ' Obliczenia SMA
+                Dim sumSMA As Double, k As Integer
+                sumSMA = 0
+                For k = 0 To SMA_Period - 1: sumSMA = sumSMA + arrPrices(lastDataRow - k, 1): Next k
+                Dim valSMA As Double: valSMA = sumSMA / SMA_Period
+                
+                ' Obliczenia RSI
+                Dim avgGain As Double, avgLoss As Double, change As Double, x As Integer
+                avgGain = 0: avgLoss = 0
+                For x = 0 To RSI_Period - 1
+                    change = arrPrices(lastDataRow - x, 1) - arrPrices(lastDataRow - x - 1, 1)
+                    If change > 0 Then avgGain = avgGain + change Else avgLoss = avgLoss + Abs(change)
+                Next x
+                Dim valRSI As Double
+                If avgLoss = 0 Then valRSI = 100 Else valRSI = 100 - (100 / (1 + (avgGain / avgLoss)))
+                
+                ' Wyniki do tabeli
+                With wsWatch
+                    .Cells(i, 2).Value = LastPrice
+                    
+                    ' Trend
+                    If LastPrice > valSMA Then
+                        .Cells(i, 3).Value = "UP"
+                        .Cells(i, 3).Interior.Color = RGB(200, 255, 200)
+                    Else
+                        .Cells(i, 3).Value = "DOWN"
+                        .Cells(i, 3).Interior.Color = RGB(255, 200, 200)
+                    End If
+                    
+                    ' RSI
+                    .Cells(i, 4).Value = valRSI
+                    If valRSI < 30 Then .Cells(i, 4).Interior.Color = RGB(200, 255, 200)
+                    If valRSI > 70 Then .Cells(i, 4).Interior.Color = RGB(255, 200, 200)
+                    
+                    ' Odczyt Sentymentu
+                    Dim AiMood As String: AiMood = "N/A"
+                    If Dir(moodFile) <> "" Then
+                        Dim fNum As Integer: fNum = FreeFile
+                        Open moodFile For Input As #fNum
+                        If Not EOF(fNum) Then Line Input #fNum, AiMood
+                        Close #fNum
+                    End If
+                    .Cells(i, 7).Value = AiMood
+                End With
+            Else
+                wsWatch.Cells(i, 2).Value = "BŁĄD DANYCH"
+                wsWatch.Cells(i, 2).Interior.Color = RGB(255, 255, 0)
+            End If
+        End If
+    Next i
+
+    ' Przywracanie głównego tickera na koniec
+    wsData.Range("H1").Value = MainTicker
+    ' Opcjonalnie: pobierz dane dla głównego tickera raz jeszcze
+    
+CleanExit:
+    wsWatch.Columns("A:H").AutoFit
+    Application.StatusBar = False
+    Application.ScreenUpdating = True
+    MsgBox "Aktualizacja Watchlisty zakończona!", vbInformation
+End Sub
